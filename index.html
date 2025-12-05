@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Player Rank Tracker</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.png">
+<meta name="theme-color" content="#0e1525">
+<style>
+body{font-family:Arial,sans-serif;margin:0;padding:16px;background:#0e1525;color:#e6eef6}
+h1{margin-top:0;text-align:center}
+.card{background:#131d33;padding:12px;border-radius:8px;margin-bottom:12px}
+input,textarea,select{width:100%;padding:8px;margin:4px 0;border-radius:6px;border:none;background:#0e1525;color:white}
+button{padding:8px 12px;border:none;border-radius:6px;background:#00ae8c;color:black;cursor:pointer;margin-top:6px}
+.list{margin-top:12px}
+.player{display:flex;justify-content:space-between;background:#192742;padding:8px;border-radius:6px;margin-bottom:6px}
+.promoted{color:#00e6a8;font-weight:bold}
+.not-promoted{color:#ff6a6a;font-weight:bold}
+.controls{display:flex;gap:8px;flex-wrap:wrap}
+.small{font-size:13px;color:#9aa4b2}
+.icon{width:36px;height:36px;border-radius:6px;display:inline-block;vertical-align:middle;margin-right:8px;background:#00ae8c;color:#04211a;text-align:center;line-height:36px;font-weight:700}
+.footer{color:#9aa4b2;font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<h1><span class="icon">RT</span> Player Rank Tracker</h1>
+<div class="card">
+  <h3>Add / Edit Player</h3>
+  <input id="id" type="hidden">
+  <label class="small">Player Name</label>
+  <input id="name" placeholder="Player Name">
+  <label class="small">Current Rank (freeform)</label>
+  <input id="rank" placeholder="e.g., Bronze, Commander, Sergeant">
+  <label class="small">Previous Rank (optional)</label>
+  <input id="prevRank" placeholder="Previous rank (freeform)">
+  <label class="small">Notes</label>
+  <textarea id="notes" placeholder="Notes"></textarea>
+  <label><input type="checkbox" id="promoted"> Mark as promoted</label>
+  <div class="controls">
+    <button id="saveBtn">Save Player</button>
+    <button id="clearBtn" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#e6eef6">Clear</button>
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div class="small">Players</div>
+      <div id="count" style="font-weight:800;font-size:18px">0</div>
+    </div>
+    <div class="small" id="lastSaved">No saves yet</div>
+  </div>
+
+  <div style="margin-top:10px;display:flex;gap:8px;align-items:center" class="controls">
+    <input id="search" placeholder="Search name, rank, notes" style="flex:1">
+    <select id="filter">
+      <option value="all">All</option>
+      <option value="promoted">Promoted</option>
+      <option value="not">Not promoted</option>
+    </select>
+    <button id="exportBtn" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#e6eef6">Export JSON</button>
+    <button id="importBtn" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#e6eef6">Import JSON</button>
+    <input type="file" id="fileInput" accept="application/json" style="display:none">
+  </div>
+
+  <div id="list" class="list"></div>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button id="clearAll" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#ff6a6a">Clear All</button>
+  </div>
+  <div class="footer">Tip: Use Export JSON to back up your players, Import JSON to restore.</div>
+</div>
+
+<script>
+const DB_NAME = 'PlayerRankDB';
+const STORE = 'players';
+let db;
+
+function openDB(){
+  return new Promise((res,rej)=>{
+    const req = indexedDB.open(DB_NAME,1);
+    req.onupgradeneeded = e => {
+      db = e.target.result;
+      if(!db.objectStoreNames.contains(STORE)){
+        const os = db.createObjectStore(STORE,{keyPath:'id'});
+        os.createIndex('name','name',{unique:false});
+      }
+    };
+    req.onsuccess = e => { db = e.target.result; res(db); };
+    req.onerror = e => rej(e);
+  });
+}
+
+async function getAll(){
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(STORE,'readonly');
+    const store = tx.objectStore(STORE);
+    const items = [];
+    store.openCursor().onsuccess = e => {
+      const c = e.target.result;
+      if(c){ items.push(c.value); c.continue(); } else res(items);
+    };
+    tx.onerror = e => rej(e);
+  });
+}
+
+function uid(){ return 'p_'+Math.random().toString(36).slice(2,9); }
+
+function saveForm(){
+  const id = document.getElementById('id').value || uid();
+  const name = document.getElementById('name').value.trim();
+  const rank = document.getElementById('rank').value.trim();
+  const prevRank = document.getElementById('prevRank').value.trim() || null;
+  const notes = document.getElementById('notes').value.trim();
+  const promoted = document.getElementById('promoted').checked;
+  if(!name || !rank){ alert('Please enter name and current rank'); return; }
+  const player = { id, name, rank, prevRank, notes, promoted, updated: Date.now() };
+  const tx = db.transaction(STORE,'readwrite').objectStore(STORE);
+  tx.put(player);
+  tx.oncomplete = ()=>{ render(); clearForm(); lastSaved(); };
+}
+
+function clearForm(){
+  document.getElementById('id').value='';
+  document.getElementById('name').value='';
+  document.getElementById('rank').value='';
+  document.getElementById('prevRank').value='';
+  document.getElementById('notes').value='';
+  document.getElementById('promoted').checked=false;
+}
+
+function editPlayer(id){
+  const tx = db.transaction(STORE,'readonly').objectStore(STORE);
+  const req = tx.get(id);
+  req.onsuccess = e => {
+    const p = e.target.result;
+    document.getElementById('id').value = p.id;
+    document.getElementById('name').value = p.name;
+    document.getElementById('rank').value = p.rank;
+    document.getElementById('prevRank').value = p.prevRank || '';
+    document.getElementById('notes').value = p.notes || '';
+    document.getElementById('promoted').checked = !!p.promoted;
+    window.scrollTo({top:0,behavior:'smooth'});
+  };
+}
+
+function deletePlayer(id){
+  if(!confirm('Delete this player?')) return;
+  const tx = db.transaction(STORE,'readwrite').objectStore(STORE);
+  tx.delete(id);
+  tx.oncomplete = ()=> render();
+}
+
+function lastSaved(){ document.getElementById('lastSaved').textContent = 'Saved ' + new Date().toLocaleString(); }
+
+async function render(){
+  const all = await getAll();
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  const filter = document.getElementById('filter').value;
+  let visible = all.filter(p=>{
+    if(q && !(p.name.toLowerCase().includes(q) || p.rank.toLowerCase().includes(q) || (p.prevRank||'').toLowerCase().includes(q) || (p.notes||'').toLowerCase().includes(q))) return false;
+    if(filter==='promoted') return !!p.promoted;
+    if(filter==='not') return !p.promoted;
+    return true;
+  });
+  visible.sort((a,b)=> b.updated - a.updated);
+  document.getElementById('count').textContent = visible.length;
+  const list = document.getElementById('list'); list.innerHTML='';
+  if(!visible.length){ list.innerHTML = '<div class="small">No players found.</div>'; return; }
+  visible.forEach(p=>{
+    const div = document.createElement('div'); div.className='player';
+    div.innerHTML = `<div><b>${p.name}</b><br><small>${p.prevRank?('Prev: '+p.prevRank+' • '):''}Rank: ${p.rank}${p.notes?('<br>'+p.notes):''}</small></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+        <div class="${p.promoted?'promoted':'not-promoted'}">${p.promoted?'PROMOTED':'NOT PROMOTED'}</div>
+        <div style="display:flex;gap:6px">
+          <button onclick="editPlayer('${p.id}')" style="background:transparent;border:0;color:#9aa4b2">✎</button>
+          <button onclick="deletePlayer('${p.id}')" style="background:transparent;border:0;color:#ff6a6a">🗑</button>
+        </div>
+      </div>`;
+    list.appendChild(div);
+  });
+}
+
+// Export / Import
+function exportJSON(){
+  getAll().then(data=>{
+    const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'players-backup.json'; a.click();
+    URL.revokeObjectURL(url);
+  });
+}
+document.getElementById('exportBtn').onclick = exportJSON;
+document.getElementById('importBtn').onclick = ()=> document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = function(e){
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = ()=>{
+    try{
+      const parsed = JSON.parse(r.result);
+      if(!Array.isArray(parsed)) throw new Error('Invalid format');
+      const tx = db.transaction(STORE,'readwrite').objectStore(STORE);
+      parsed.forEach(it=> tx.put({...it, id: it.id || uid(), updated: it.updated || Date.now()}));
+      tx.oncomplete = ()=>{ render(); alert('Imported.'); };
+    }catch(err){ alert('Import failed: '+err.message); }
+  };
+  r.readAsText(f); e.target.value='';
+};
+
+document.getElementById('saveBtn').onclick = saveForm;
+document.getElementById('clearBtn').onclick = clearForm;
+document.getElementById('search').oninput = render;
+document.getElementById('filter').onchange = render;
+document.getElementById('clearAll').onclick = ()=>{ if(confirm('Remove all players?')){ const tx = db.transaction(STORE,'readwrite').objectStore(STORE); tx.clear(); tx.oncomplete = ()=> render(); } };
+
+// Service worker registration
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('service-worker.js').catch(()=>{}); }
+
+// Init DB and render
+openDB().then(()=>render()).catch(err=>console.error(err));
+</script>
+</body>
+</html>
